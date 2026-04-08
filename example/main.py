@@ -1,3 +1,4 @@
+# example/main.py
 from payfake import Client, PayfakeError
 from payfake.types import (
     ChargeCardInput,
@@ -12,15 +13,18 @@ from payfake.types import (
 
 
 def main():
-    # Initialize the client, point it at your running Payfake server.
-    client = Client(
-        secret_key="sk_test_your_key_here",
+
+    # STEP 1: Create auth client (no secret key needed)
+
+    auth_client = Client(
+        secret_key="",  # Not required for auth endpoints
         base_url="http://localhost:8080",
     )
 
-    # Register a merchant
+    # STEP 2: Register or Login to get auth token
+
     try:
-        reg = client.auth.register(
+        reg = auth_client.auth.register(
             RegisterInput(
                 business_name="Acme Store",
                 email="dev@acme.com",
@@ -28,12 +32,10 @@ def main():
             )
         )
         print(f"Registered: {reg.merchant.id}")
-        print(f"Public key: {reg.merchant.public_key}")
         token = reg.token
     except PayfakeError as e:
         if e.is_code(PayfakeError.CODE_EMAIL_TAKEN):
-            # Already registered, just login instead.
-            login = client.auth.login(
+            login = auth_client.auth.login(
                 LoginInput(
                     email="dev@acme.com",
                     password="secret123",
@@ -44,11 +46,26 @@ def main():
         else:
             raise
 
-    #  Initialize a transaction
+    # STEP 3: Get actual API keys using auth token
+
+    keys = auth_client.auth.get_keys(token)
+    print("\nAPI Keys retrieved:")
+    print(f"Public Key: {keys.public_key}")
+    print(f"Secret Key: {keys.secret_key}")
+
+    # STEP 4: Create authenticated client with real secret key
+
+    client = Client(
+        secret_key=keys.secret_key,
+        base_url="http://localhost:8080",
+    )
+
+    # STEP 5: Initialize a transaction
+
     tx = client.transaction.initialize(
         InitializeInput(
             email="customer@example.com",
-            amount=10000,  # GHS 100.00 — amounts in smallest unit (pesewas)
+            amount=10000,  # GHS 100.00
             currency="GHS",
         )
     )
@@ -57,7 +74,8 @@ def main():
     print(f"Access code:       {tx.access_code}")
     print(f"Authorization URL: {tx.authorization_url}")
 
-    #  Charge a card
+    # STEP 6: Charge a card
+
     try:
         charge = client.charge.card(
             ChargeCardInput(
@@ -71,17 +89,17 @@ def main():
         print(f"\nCard charge status: {charge.transaction.status}")
     except PayfakeError as e:
         if e.is_code(PayfakeError.CODE_CHARGE_FAILED):
-            print(
-                f"\nCharge failed — error: {e.fields[0].message if e.fields else e.code}"
-            )
+            print(f"\nCharge failed: {e.fields[0].message if e.fields else e.code}")
         else:
             raise
 
-    #  Verify the transaction
+    # STEP 7: Verify transaction
+
     verified = client.transaction.verify(tx.reference)
     print(f"Verified status: {verified.status}")
 
-    #  Test MoMo flow
+    # STEP 8: Mobile Money flow
+
     tx2 = client.transaction.initialize(
         InitializeInput(
             email="momo@example.com",
@@ -96,21 +114,18 @@ def main():
             email="momo@example.com",
         )
     )
-    # MoMo always returns pending immediately,
-    # the real outcome arrives via webhook after the delay.
-    print(f"\nMoMo charge status: {momo.transaction.status}")  # always "pending"
+    print(f"\nMoMo charge status: {momo.transaction.status}")
 
-    # Control panel operations
+    # STEP 9: Control panel operations (using auth token, not secret key)
 
-    # Set 50% failure rate + 1 second delay
-    scenario = client.control.update_scenario(
+    scenario = auth_client.control.update_scenario(
         token,
         UpdateScenarioInput(
             failure_rate=0.5,
             delay_ms=1000,
         ),
     )
-    print(f"\nScenario updated — failure rate: {scenario.failure_rate}")
+    print(f"\nScenario updated - failure rate: {scenario.failure_rate}")
 
     # Force a specific transaction to fail
     tx3 = client.transaction.initialize(
@@ -119,7 +134,7 @@ def main():
             amount=2000,
         )
     )
-    forced = client.control.force_transaction(
+    forced = auth_client.control.force_transaction(
         token,
         tx3.reference,
         ForceTransactionInput(
@@ -129,15 +144,22 @@ def main():
     )
     print(f"Forced transaction status: {forced.status}")
 
-    # Reset scenario back to defaults
-    client.control.reset_scenario(token)
-    print("Scenario reset, all charges will succeed again")
+    # Reset scenario
+    auth_client.control.reset_scenario(token)
+    print("Scenario reset")
 
-    # List recent logs
-    logs = client.control.get_logs(token, ListOptions(page=1, per_page=5))
-    print(f"\nRecent requests: {len(logs)}")
-    for log in logs:
-        print(f"  {log.method} {log.path} → {log.status_code}")
+    # STEP 10: Get recent logs
+
+    try:
+        logs = auth_client.control.get_logs(token, ListOptions(page=1, per_page=5))
+        print(f"\nRecent requests: {len(logs)}")
+        for log in logs:
+            print(f"  {log.method} {log.path} -> {log.status_code}")
+    except PayfakeError as e:
+        if e.is_code("LOGS_EMPTY"):
+            print("\nNo logs found yet (expected for new merchant)")
+        else:
+            raise
 
 
 if __name__ == "__main__":
