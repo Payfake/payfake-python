@@ -4,12 +4,15 @@ from typing import TYPE_CHECKING
 
 from .transaction import _parse_transaction
 from .types import (
+    CustomerList,
     ForceTransactionInput,
     ListOptions,
     OTPLog,
+    PaginationMeta,
     RequestLog,
     ScenarioConfig,
     Transaction,
+    TransactionList,
     UpdateScenarioInput,
     WebhookAttempt,
     WebhookEvent,
@@ -181,3 +184,56 @@ class ControlNamespace:
             OTPLog(**{k: v for k, v in log.items() if k in OTPLog.__dataclass_fields__})
             for log in raw_logs
         ]
+
+    def list_transactions(
+        self,
+        token: str,
+        page: int = 1,
+        per_page: int = 50,
+        status: str = "",
+        search: str = "",
+    ) -> TransactionList:
+        """
+        JWT-authenticated transaction list for the dashboard.
+        Supports filtering by status and searching by reference or customer email.
+        """
+        path = f"/api/v1/control/transactions?page={page}&per_page={per_page}"
+        if status:
+            path += f"&status={status}"
+        if search:
+            path += f"&search={search}"
+
+        data = self._client._request("GET", path, token=token)
+        transactions = [_parse_transaction(tx) for tx in data.get("transactions", [])]
+        meta = PaginationMeta(
+            **{
+                k: v
+                for k, v in data.get("meta", {}).items()
+                if k in PaginationMeta.__dataclass_fields__
+            }
+        )
+        return TransactionList(transactions=transactions, meta=meta)
+
+    def list_customers(
+        self,
+        token: str,
+        opts: ListOptions | None = None,
+    ) -> CustomerList:
+        """JWT-authenticated customer list for the dashboard."""
+        from .customer import _parse_customer
+
+        opts = opts or ListOptions()
+        data = self._client._request(
+            "GET",
+            f"/api/v1/control/customers?page={opts.page}&per_page={opts.per_page}",
+            token=token,
+        )
+        customers = [_parse_customer(c) for c in data.get("customers", [])]
+        meta = PaginationMeta(
+            **{
+                k: v
+                for k, v in data.get("meta", {}).items()
+                if k in PaginationMeta.__dataclass_fields__
+            }
+        )
+        return CustomerList(customers=customers, meta=meta)

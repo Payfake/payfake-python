@@ -356,3 +356,15 @@ class OTPLog:
     used: bool
     expires_at: str
     created_at: str
+
+
+@dataclass
+class MerchantProfile:
+    id: str
+    business_name: str
+    email: str
+    public_key: str
+    webhook_url: str = ""
+    is_active: bool = True
+    created_at: str = ""
+    updated_at: str = ""
