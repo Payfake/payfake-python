@@ -47,6 +47,11 @@ from .types import (
     ListOptions,
     LoginInput,
     RegisterInput,
+    ResendOTPInput,
+    SubmitAddressInput,
+    SubmitBirthdayInput,
+    SubmitOTPInput,
+    SubmitPINInput,
     UpdateCustomerInput,
     UpdateScenarioInput,
 )

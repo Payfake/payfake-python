@@ -277,3 +277,82 @@ class RequestLog:
 class ListOptions:
     page: int = 1
     per_page: int = 50
+
+
+#
+# Charge flow v0.2.0
+#
+
+
+@dataclass
+class SubmitPINInput:
+    reference: str
+    pin: str
+
+
+@dataclass
+class SubmitOTPInput:
+    reference: str
+    otp: str
+
+
+@dataclass
+class SubmitBirthdayInput:
+    reference: str
+    # format: YYYY-MM-DD
+    birthday: str
+
+
+@dataclass
+class SubmitAddressInput:
+    reference: str
+    address: str
+    city: str
+    state: str
+    zip_code: str
+    country: str
+
+
+@dataclass
+class ResendOTPInput:
+    reference: str
+
+
+@dataclass
+class ChargeFlowResponse:
+    """
+    Returned by every charge step endpoint.
+    Read status to decide what the checkout page renders next.
+
+    status values:
+        send_pin      → show PIN input
+        send_otp      → show OTP input
+        send_birthday → show date of birth input
+        send_address  → show address form
+        open_url      → navigate to three_ds_url
+        pay_offline   → show approve on phone screen, poll transaction
+        success       → show success screen
+        failed        → show failure screen
+    """
+
+    status: str
+    reference: str
+    display_text: str = ""
+    three_ds_url: str = ""
+    transaction: Transaction = field(default_factory=Transaction)
+    charge: ChargeData = field(default_factory=ChargeData)
+
+
+@dataclass
+class OTPLog:
+    """A generated OTP stored for developer inspection during testing."""
+
+    id: str
+    merchant_id: str
+    reference: str
+    channel: str
+    otp_code: str
+    step: str
+    used: bool
+    expires_at: str
+    created_at: str

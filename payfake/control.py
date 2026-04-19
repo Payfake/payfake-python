@@ -6,6 +6,7 @@ from .transaction import _parse_transaction
 from .types import (
     ForceTransactionInput,
     ListOptions,
+    OTPLog,
     RequestLog,
     ScenarioConfig,
     Transaction,
@@ -149,3 +150,34 @@ class ControlNamespace:
     def clear_logs(self, token: str) -> None:
         """Permanently delete all logs for the merchant."""
         self._client._request("DELETE", "/api/v1/control/logs", token=token)
+
+    def get_otp_logs(
+        self,
+        token: str,
+        reference: str = "",
+        opts: ListOptions | None = None,
+    ) -> list[OTPLog]:
+        """
+        Fetch OTP codes generated during charge flows.
+        Pass reference to filter for a specific transaction.
+
+        This is the primary way to get OTPs during testing without a real phone::
+
+            logs = client.control.get_otp_logs(token, reference=tx.reference)
+            otp = logs[0].otp_code
+        """
+        from .types import OTPLog
+
+        path = "/api/v1/control/otp-logs"
+        if reference:
+            path += f"?reference={reference}"
+        elif opts:
+            path += f"?page={opts.page}&per_page={opts.per_page}"
+
+        data = self._client._request("GET", path, token=token)
+
+        raw_logs = data.get("otp_logs", [])
+        return [
+            OTPLog(**{k: v for k, v in log.items() if k in OTPLog.__dataclass_fields__})
+            for log in raw_logs
+        ]

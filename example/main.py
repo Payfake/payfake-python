@@ -76,22 +76,55 @@ def main():
 
     # STEP 6: Charge a card
 
-    try:
-        charge = client.charge.card(
-            ChargeCardInput(
-                access_code=tx.access_code,
-                card_number="4111111111111111",
-                card_expiry="12/26",
-                cvv="123",
-                email="customer@example.com",
-            )
+    #  Full local card flow
+    from payfake.types import SubmitOTPInput, SubmitPINInput
+
+    tx = client.transaction.initialize(
+        InitializeInput(
+            email="customer@example.com",
+            amount=10000,
+            currency="GHS",
         )
-        print(f"\nCard charge status: {charge.transaction.status}")
-    except PayfakeError as e:
-        if e.is_code(PayfakeError.CODE_CHARGE_FAILED):
-            print(f"\nCharge failed: {e.fields[0].message if e.fields else e.code}")
-        else:
-            raise
+    )
+    print(f"Reference: {tx.reference}")
+
+    # Step 1 — initiate card charge (local Verve card)
+    step1 = client.charge.card(
+        ChargeCardInput(
+            access_code=tx.access_code,
+            card_number="5061000000000000",
+            card_expiry="12/26",
+            cvv="123",
+            email="customer@example.com",
+        )
+    )
+    print(f"Step 1 status: {step1.status}")  # send_pin
+
+    # Step 2 — submit PIN
+    step2 = client.charge.submit_pin(
+        SubmitPINInput(
+            reference=tx.reference,
+            pin="1234",
+        )
+    )
+    print(f"Step 2 status: {step2.status}")  # send_otp
+
+    # Step 3 — get OTP from logs
+    otp_logs = client.control.get_otp_logs(token, reference=tx.reference)
+    otp_code = otp_logs[0].otp_code
+    print(f"OTP: {otp_code}")
+
+    # Step 4 — submit OTP
+    step3 = client.charge.submit_otp(
+        SubmitOTPInput(
+            reference=tx.reference,
+            otp=otp_code,
+        )
+    )
+    print(f"Step 3 status: {step3.status}")  # success
+
+    verified = client.transaction.verify(tx.reference)
+    print(f"Verified: {verified.status}")
 
     # STEP 7: Verify transaction
 
