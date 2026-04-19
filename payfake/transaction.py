@@ -8,6 +8,8 @@ from .types import (
     InitializeResponse,
     ListOptions,
     PaginationMeta,
+    PublicTransactionResponse,
+    PublicVerifyResponse,
     Transaction,
     TransactionList,
 )
@@ -97,3 +99,50 @@ class TransactionNamespace:
         """
         data = self._client._request("POST", f"/api/v1/transaction/{id}/refund")
         return _parse_transaction(data)
+
+    def public_fetch(self, access_code: str) -> "PublicTransactionResponse":
+        """
+        Load transaction details for the checkout page.
+        No secret key required — authenticated via access code.
+        Returns amount, currency, merchant branding, customer email
+        and current charge flow status.
+
+        Called on checkout page mount::
+
+            tx = client.transaction.public_fetch(access_code)
+            print(f"Pay {tx.merchant['business_name']} GHS {tx.amount / 100:.2f}")
+        """
+
+        data = self._client._request("GET", f"/api/v1/public/transaction/{access_code}")
+        return PublicTransactionResponse(
+            **{
+                k: v
+                for k, v in data.items()
+                if k in PublicTransactionResponse.__dataclass_fields__
+            }
+        )
+
+    def public_verify(self, reference: str) -> "PublicVerifyResponse":
+        """
+        Poll transaction status for MoMo pay_offline state.
+        No secret key required.
+        Poll every 3 seconds, stop when status is success or failed::
+
+            import time
+            while True:
+                result = client.transaction.public_verify(reference)
+                if result.status in ("success", "failed"):
+                    break
+                time.sleep(3)
+        """
+
+        data = self._client._request(
+            "GET", f"/api/v1/public/transaction/verify/{reference}"
+        )
+        return PublicVerifyResponse(
+            **{
+                k: v
+                for k, v in data.items()
+                if k in PublicVerifyResponse.__dataclass_fields__
+            }
+        )

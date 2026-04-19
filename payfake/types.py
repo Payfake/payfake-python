@@ -368,3 +368,48 @@ class MerchantProfile:
     is_active: bool = True
     created_at: str = ""
     updated_at: str = ""
+
+
+@dataclass
+class PublicChargeStatus:
+    """Charge state embedded in public transaction responses."""
+
+    flow_status: str = ""
+    status: str = ""
+    error_code: str = ""
+    channel: str = ""
+
+
+@dataclass
+class PublicTransactionResponse:
+    """
+    Returned by GET /public/transaction/:access_code.
+    Contains everything the checkout page needs on mount.
+    Check status for the human-readable state message.
+    Check charge.flow_status to know where in the payment flow things are.
+    """
+
+    amount: int
+    currency: str
+    status: str
+    reference: str
+    callback_url: str = ""
+    access_code: str = ""
+    merchant: dict = field(default_factory=dict)
+    customer: dict = field(default_factory=dict)
+    charge: PublicChargeStatus | None = None
+
+
+@dataclass
+class PublicVerifyResponse:
+    """
+    Returned by GET /public/transaction/verify/:reference.
+    Used for MoMo polling — check status each tick.
+    """
+
+    status: str
+    reference: str
+    amount: int
+    currency: str
+    paid_at: str | None = None
+    charge: PublicChargeStatus | None = None
