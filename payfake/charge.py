@@ -2,162 +2,177 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .types import (
-    ChargeBankInput,
-    ChargeCardInput,
-    ChargeData,
-    ChargeFlowResponse,
-    ChargeMomoInput,
-    ResendOTPInput,
-    SubmitAddressInput,
-    SubmitBirthdayInput,
-    SubmitOTPInput,
-    SubmitPINInput,
-    Transaction,
-)
-
 if TYPE_CHECKING:
-    from .client import Client
-
-
-def _parse_flow_response(data: dict) -> ChargeFlowResponse:
-    """
-    Deserialize a charge flow response dict.
-    All charge step endpoints return this same shape so we parse once.
-    """
-    from .transaction import _parse_transaction
-
-    tx_data = dict(data.get("transaction") or {})
-    charge_data = data.get("charge") or {}
-
-    tx = (
-        _parse_transaction(tx_data)
-        if tx_data
-        else Transaction(
-            id="",
-            reference="",
-            amount=0,
-            currency="GHS",
-            status="",
-            channel="",
-            fees=0,
-            access_code="",
-            callback_url="",
-            created_at="",
-        )
-    )
-
-    charge = (
-        ChargeData(
-            **{
-                k: v
-                for k, v in charge_data.items()
-                if k in ChargeData.__dataclass_fields__
-            }
-        )
-        if charge_data
-        else ChargeData()
-    )
-
-    return ChargeFlowResponse(
-        status=data.get("status", ""),
-        reference=data.get("reference", ""),
-        display_text=data.get("display_text", ""),
-        three_ds_url=data.get("three_ds_url", ""),
-        transaction=tx,
-        charge=charge,
-    )
+    from .client import _HTTPClient
 
 
 class ChargeNamespace:
-    def __init__(self, client: "Client") -> None:
-        self._client = client
+    """
+    Wraps /charge endpoints.
+    Matches https://api.paystack.co/charge exactly.
+    All methods call POST /charge, channel detected from body object.
+    Auth: Bearer sk_test_xxx
+    """
 
-    def card(self, input: ChargeCardInput) -> ChargeFlowResponse:
-        """
-        Initiate a card charge.
-        Returns send_pin for local Verve cards (5061, 5062, 5063, 6500, 6501).
-        Returns open_url for international Visa/Mastercard — use three_ds_url.
-        """
-        data = self._client._request("POST", "/api/v1/charge/card", body=input)
-        return _parse_flow_response(data)
+    def __init__(self, http: "_HTTPClient") -> None:
+        self._http = http
 
-    def mobile_money(self, input: ChargeMomoInput) -> ChargeFlowResponse:
+    def card(
+        self,
+        *,
+        email: str,
+        card: dict,
+        amount: int = 0,
+        access_code: str = "",
+        reference: str = "",
+    ) -> dict:
         """
-        Initiate a mobile money charge.
-        Always returns send_otp first — customer verifies phone with OTP.
-        After OTP returns pay_offline — poll transaction for final outcome.
-        """
-        data = self._client._request("POST", "/api/v1/charge/mobile_money", body=input)
-        return _parse_flow_response(data)
+        Initiate a card charge via POST /charge.
 
-    def bank(self, input: ChargeBankInput) -> ChargeFlowResponse:
-        """
-        Initiate a bank transfer charge.
-        Returns send_birthday — customer must enter date of birth first.
-        """
-        data = self._client._request("POST", "/api/v1/charge/bank", body=input)
-        return _parse_flow_response(data)
+        Local Ghana cards (Verve: 5061, 5062, 5063, 6500, 6501):
+            returns status "send_pin" → call submit_pin
 
-    def submit_pin(self, input: SubmitPINInput) -> ChargeFlowResponse:
-        """
-        Submit card PIN after a send_pin response.
-        Returns send_otp — OTP sent to registered phone.
-        Read OTP from client.control.get_otp_logs(token, reference=input.reference).
-        """
-        data = self._client._request("POST", "/api/v1/charge/submit_pin", body=input)
-        return _parse_flow_response(data)
+        International cards (Visa 4xxx, Mastercard 5xxx):
+            returns status "open_url" + url → checkout navigates to url
 
-    def submit_otp(self, input: SubmitOTPInput) -> ChargeFlowResponse:
+        card dict: { "number": str, "cvv": str, "expiry_month": str, "expiry_year": str }
         """
-        Submit OTP after a send_otp response.
-        Card/bank: returns success or failed.
-        MoMo: returns pay_offline — poll transaction for final webhook outcome.
-        """
-        data = self._client._request("POST", "/api/v1/charge/submit_otp", body=input)
-        return _parse_flow_response(data)
+        body: dict = {"email": email, "card": card}
+        if amount:
+            body["amount"] = amount
+        if access_code:
+            body["access_code"] = access_code
+        if reference:
+            body["reference"] = reference
+        return self._http.do("POST", "/charge", body)
 
-    def submit_birthday(self, input: SubmitBirthdayInput) -> ChargeFlowResponse:
+    def mobile_money(
+        self,
+        *,
+        email: str,
+        mobile_money: dict,
+        amount: int = 0,
+        access_code: str = "",
+        reference: str = "",
+    ) -> dict:
         """
-        Submit date of birth after a send_birthday response.
-        Returns send_otp on success.
+        Initiate a MoMo charge via POST /charge.
+        Returns status "send_otp" → call submit_otp.
+        After OTP returns "pay_offline" → poll transaction.public_verify.
+
+        mobile_money dict: { "phone": str, "provider": "mtn"|"vodafone"|"airteltigo" }
         """
-        data = self._client._request(
-            "POST", "/api/v1/charge/submit_birthday", body=input
+        body: dict = {"email": email, "mobile_money": mobile_money}
+        if amount:
+            body["amount"] = amount
+        if access_code:
+            body["access_code"] = access_code
+        if reference:
+            body["reference"] = reference
+        return self._http.do("POST", "/charge", body)
+
+    def bank(
+        self,
+        *,
+        email: str,
+        bank: dict,
+        amount: int = 0,
+        access_code: str = "",
+        reference: str = "",
+        birthday: str = "",
+    ) -> dict:
+        """
+        Initiate a bank transfer charge via POST /charge.
+        Returns status "send_birthday" → call submit_birthday.
+
+        bank dict: { "code": str, "account_number": str }
+        """
+        body: dict = {"email": email, "bank": bank}
+        if amount:
+            body["amount"] = amount
+        if access_code:
+            body["access_code"] = access_code
+        if reference:
+            body["reference"] = reference
+        if birthday:
+            body["birthday"] = birthday
+        return self._http.do("POST", "/charge", body)
+
+    def submit_pin(self, *, reference: str, pin: str) -> dict:
+        """
+        Submit card PIN after status "send_pin".
+        Returns status "send_otp", OTP sent to registered phone.
+        Read OTP from client.control.get_otp_logs() during testing.
+        """
+        return self._http.do(
+            "POST", "/charge/submit_pin", {"reference": reference, "pin": pin}
         )
-        return _parse_flow_response(data)
 
-    def submit_address(self, input: SubmitAddressInput) -> ChargeFlowResponse:
+    def submit_otp(self, *, reference: str, otp: str) -> dict:
         """
-        Submit billing address after a send_address response.
-        Returns success or failed.
+        Submit OTP after status "send_otp".
+        Card/bank: returns "success" or "failed".
+        MoMo: returns "pay_offline", poll transaction.public_verify.
         """
-        data = self._client._request(
-            "POST", "/api/v1/charge/submit_address", body=input
+        return self._http.do(
+            "POST", "/charge/submit_otp", {"reference": reference, "otp": otp}
         )
-        return _parse_flow_response(data)
 
-    def resend_otp(self, input: ResendOTPInput) -> ChargeFlowResponse:
+    def submit_birthday(self, *, reference: str, birthday: str) -> dict:
         """
-        Request a new OTP when the customer hasn't received one.
-        Invalidates the previous OTP. Returns send_otp with fresh OTP.
-        Read new OTP from client.control.get_otp_logs(token, reference=input.reference).
+        Submit date of birth after status "send_birthday".
+        Returns status "send_otp" on success.
+        birthday format: YYYY-MM-DD
         """
-        data = self._client._request("POST", "/api/v1/charge/resend_otp", body=input)
-        return _parse_flow_response(data)
+        return self._http.do(
+            "POST",
+            "/charge/submit_birthday",
+            {
+                "reference": reference,
+                "birthday": birthday,
+            },
+        )
 
-    def simulate_3ds(self, reference: str) -> ChargeFlowResponse:
+    def submit_address(
+        self,
+        *,
+        reference: str,
+        address: str,
+        city: str,
+        state: str,
+        zip_code: str,
+        country: str,
+    ) -> dict:
+        """Submit billing address after status "send_address". Returns success or failed."""
+        return self._http.do(
+            "POST",
+            "/charge/submit_address",
+            {
+                "reference": reference,
+                "address": address,
+                "city": city,
+                "state": state,
+                "zip_code": zip_code,
+                "country": country,
+            },
+        )
+
+    def resend_otp(self, *, reference: str) -> dict:
+        """
+        Request a fresh OTP when the customer hasn't received one.
+        Invalidates the previous OTP. Returns status "send_otp".
+        Read the new OTP from client.control.get_otp_logs().
+        """
+        return self._http.do("POST", "/charge/resend_otp", {"reference": reference})
+
+    def fetch(self, reference: str) -> dict:
+        """Fetch the current state of a charge by transaction reference."""
+        return self._http.do("GET", f"/charge/{reference}")
+
+    def simulate_3ds(self, reference: str) -> dict:
         """
         Complete the simulated 3DS verification.
-        Called after customer confirms on the checkout app's 3DS page.
-        Returns success or failed based on scenario config.
+        Called by the checkout app after the customer confirms on the 3DS page.
+        Returns "success" or "failed" based on the scenario config.
         """
-        data = self._client._request("POST", f"/api/v1/public/simulate/3ds/{reference}")
-        return _parse_flow_response(data)
-
-    def fetch(self, reference: str) -> ChargeData:
-        """Fetch the current state of a charge by transaction reference."""
-        data = self._client._request("GET", f"/api/v1/charge/{reference}")
-        return ChargeData(
-            **{k: v for k, v in data.items() if k in ChargeData.__dataclass_fields__}
-        )
+        return self._http.do_public("POST", f"/api/v1/public/simulate/3ds/{reference}")

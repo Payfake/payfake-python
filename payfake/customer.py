@@ -2,81 +2,59 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .transaction import _parse_transaction
-from .types import (
-    CreateCustomerInput,
-    Customer,
-    CustomerList,
-    ListOptions,
-    PaginationMeta,
-    TransactionList,
-    UpdateCustomerInput,
-)
-
 if TYPE_CHECKING:
-    from .client import Client
-
-
-def _parse_customer(data: dict) -> Customer:
-    return Customer(
-        **{k: v for k, v in data.items() if k in Customer.__dataclass_fields__}
-    )
+    from .client import _HTTPClient
 
 
 class CustomerNamespace:
-    def __init__(self, client: "Client") -> None:
-        self._client = client
+    """
+    Wraps /customer endpoints.
+    Matches https://api.paystack.co/customer exactly.
+    Auth: Bearer sk_test_xxx
+    """
 
-    def create(self, input: CreateCustomerInput) -> Customer:
-        """Create a new customer under the merchant account."""
-        data = self._client._request("POST", "/api/v1/customer", body=input)
-        return _parse_customer(data)
+    def __init__(self, http: "_HTTPClient") -> None:
+        self._http = http
 
-    def list(self, opts: ListOptions | None = None) -> CustomerList:
+    def create(
+        self,
+        *,
+        email: str,
+        first_name: str = "",
+        last_name: str = "",
+        phone: str = "",
+        metadata: dict | None = None,
+    ) -> dict:
+        """Create a new customer."""
+        body: dict = {"email": email}
+        if first_name:
+            body["first_name"] = first_name
+        if last_name:
+            body["last_name"] = last_name
+        if phone:
+            body["phone"] = phone
+        if metadata:
+            body["metadata"] = metadata
+        return self._http.do("POST", "/customer", body)
+
+    def list(self, *, page: int = 1, per_page: int = 50) -> dict:
         """List customers with pagination."""
-        opts = opts or ListOptions()
-        data = self._client._request(
-            "GET",
-            f"/api/v1/customer?page={opts.page}&per_page={opts.per_page}",
-        )
-        customers = [_parse_customer(c) for c in data.get("customers", [])]
-        meta = PaginationMeta(
-            **{
-                k: v
-                for k, v in data.get("meta", {}).items()
-                if k in PaginationMeta.__dataclass_fields__
-            }
-        )
-        return CustomerList(customers=customers, meta=meta)
+        return self._http.do("GET", f"/customer?page={page}&perPage={per_page}")
 
-    def get(self, code: str) -> Customer:
+    def fetch(self, code: str) -> dict:
         """Fetch a customer by their code (CUS_xxxxxxxx)."""
-        data = self._client._request("GET", f"/api/v1/customer/{code}")
-        return _parse_customer(data)
+        return self._http.do("GET", f"/customer/{code}")
 
-    def update(self, code: str, input: UpdateCustomerInput) -> Customer:
+    def update(self, code: str, **kwargs) -> dict:
         """
         Partially update a customer.
-        Only non-None fields are sent, None means "don't touch this field".
+        Pass only the fields you want to update.
+        kwargs: first_name, last_name, phone, metadata
         """
-        data = self._client._request("PUT", f"/api/v1/customer/{code}", body=input)
-        return _parse_customer(data)
+        return self._http.do("PUT", f"/customer/{code}", kwargs or None)
 
-    def transactions(
-        self, code: str, opts: ListOptions | None = None
-    ) -> TransactionList:
-        """Fetch paginated transactions for a specific customer."""
-        opts = opts or ListOptions()
-        data = self._client._request(
-            "GET",
-            f"/api/v1/customer/{code}/transactions?page={opts.page}&per_page={opts.per_page}",
+    def transactions(self, code: str, *, page: int = 1, per_page: int = 50) -> dict:
+        """Get paginated transactions for a customer."""
+        return self._http.do(
+            "GET", f"/customer/{code}/transactions?page={page}&perPage={per_page}"
         )
-        transactions = [_parse_transaction(tx) for tx in data.get("transactions", [])]
-        meta = PaginationMeta(
-            **{
-                k: v
-                for k, v in data.get("meta", {}).items()
-                if k in PaginationMeta.__dataclass_fields__
-            }
-        )
-        return TransactionList(transactions=transactions, meta=meta)

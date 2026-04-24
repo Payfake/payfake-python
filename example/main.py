@@ -1,199 +1,135 @@
-# example/main.py
+import time
+
 from payfake import Client, PayfakeError
-from payfake.types import (
-    ChargeCardInput,
-    ChargeMomoInput,
-    ForceTransactionInput,
-    InitializeInput,
-    ListOptions,
-    LoginInput,
-    RegisterInput,
-    UpdateScenarioInput,
+
+client = Client(
+    secret_key="sk_test_your_key_here",
+    base_url="http://localhost:8080",
 )
 
-
-def main():
-
-    # STEP 1: Create auth client (no secret key needed)
-
-    auth_client = Client(
-        secret_key="",  # Not required for auth endpoints
-        base_url="http://localhost:8080",
+#  Register
+try:
+    resp = client.auth.register(
+        business_name="Acme Store",
+        email="dev@acme.com",
+        password="secret123",
     )
+    token = resp["access_token"]
+    print("Registered:", resp["merchant"]["id"])
+except PayfakeError as e:
+    if e.is_code(PayfakeError.CODE_EMAIL_TAKEN):
+        print("Email taken — logging in")
+        resp = client.auth.login(email="dev@acme.com", password="secret123")
+        token = resp["access_token"]
+    else:
+        raise
 
-    # STEP 2: Register or Login to get auth token
+#  Get keys
+keys = client.auth.get_keys(token)
+print("Secret key:", keys["secret_key"][:20] + "...")
 
-    try:
-        reg = auth_client.auth.register(
-            RegisterInput(
-                business_name="Acme Store",
-                email="dev@acme.com",
-                password="secret123",
-            )
-        )
-        print(f"Registered: {reg.merchant.id}")
-        token = reg.token
-    except PayfakeError as e:
-        if e.is_code(PayfakeError.CODE_EMAIL_TAKEN):
-            login = auth_client.auth.login(
-                LoginInput(
-                    email="dev@acme.com",
-                    password="secret123",
-                )
-            )
-            token = login.token
-            print(f"Logged in as: {login.merchant.email}")
-        else:
-            raise
+authed = Client(secret_key=keys["secret_key"], base_url="http://localhost:8080")
 
-    # STEP 3: Get actual API keys using auth token
+#  Initialize
+tx = authed.transaction.initialize(
+    email="customer@example.com",
+    amount=10000,
+    currency="GHS",
+)
+print("\nReference:        ", tx["reference"])
+print("Authorization URL:", tx["authorization_url"])
 
-    keys = auth_client.auth.get_keys(token)
-    print("\nAPI Keys retrieved:")
-    print(f"Public Key: {keys.public_key}")
-    print(f"Secret Key: {keys.secret_key}")
+#  Full local Verve card flow
+print("\n── Card flow (local Verve) ──")
 
-    # STEP 4: Create authenticated client with real secret key
+step1 = authed.charge.card(
+    email="customer@example.com",
+    access_code=tx["access_code"],
+    card={
+        "number": "5061000000000000",
+        "cvv": "123",
+        "expiry_month": "12",
+        "expiry_year": "2026",
+    },
+)
+print("Step 1:", step1["status"])  # send_pin
 
-    client = Client(
-        secret_key=keys.secret_key,
-        base_url="http://localhost:8080",
+step2 = authed.charge.submit_pin(reference=tx["reference"], pin="1234")
+print("Step 2:", step2["status"])  # send_otp
+
+otp_logs = authed.control.get_otp_logs(token, reference=tx["reference"])
+otp = otp_logs[0]["otp_code"]
+print("OTP:   ", otp)
+
+step3 = authed.charge.submit_otp(reference=tx["reference"], otp=otp)
+print("Step 3:", step3["status"])  # success
+
+#  Verify
+verified = authed.transaction.verify(tx["reference"])
+print("\nVerified:         ", verified["status"])
+print("Gateway response: ", verified["gateway_response"])
+print("Auth code:        ", verified.get("authorization", {}).get("authorization_code"))
+
+#  MoMo flow
+print("\n── MoMo flow ──")
+
+tx2 = authed.transaction.initialize(email="momo@example.com", amount=5000)
+momo1 = authed.charge.mobile_money(
+    email="momo@example.com",
+    access_code=tx2["access_code"],
+    mobile_money={"phone": "+233241234567", "provider": "mtn"},
+)
+print("MoMo step 1:", momo1["status"])  # send_otp
+
+momo_logs = authed.control.get_otp_logs(token, reference=tx2["reference"])
+momo2 = authed.charge.submit_otp(
+    reference=tx2["reference"],
+    otp=momo_logs[0]["otp_code"],
+)
+print("MoMo step 2:", momo2["status"])  # pay_offline
+
+print("Polling for resolution...")
+for i in range(10):
+    result = authed.transaction.public_verify(tx2["reference"])
+    flow = (result.get("charge") or {}).get("flow_status", "–")
+    print(f"  poll {i + 1}: status={result['status']} flow={flow}")
+    if result["status"] in ("success", "failed"):
+        print("Resolved:", result["status"])
+        break
+    time.sleep(1)
+
+#  Scenario testing
+print("\n── Scenario testing ──")
+
+authed.control.update_scenario(
+    token,
+    force_status="failed",
+    error_code="CHARGE_INSUFFICIENT_FUNDS",
+)
+print("Scenario: force insufficient funds")
+
+tx3 = authed.transaction.initialize(email="fail@example.com", amount=10000)
+try:
+    authed.charge.card(
+        email="fail@example.com",
+        access_code=tx3["access_code"],
+        card={
+            "number": "5061000000000000",
+            "cvv": "123",
+            "expiry_month": "12",
+            "expiry_year": "2026",
+        },
     )
+except PayfakeError as e:
+    print("Charge failed as expected:", e.code)
+    if e.is_code(PayfakeError.CODE_INSUFFICIENT_FUNDS):
+        print("Correctly identified as insufficient funds")
 
-    # STEP 5: Initialize a transaction
+authed.control.reset_scenario(token)
+print("Scenario reset")
 
-    tx = client.transaction.initialize(
-        InitializeInput(
-            email="customer@example.com",
-            amount=10000,  # GHS 100.00
-            currency="GHS",
-        )
-    )
-    print(f"\nTransaction initialized")
-    print(f"Reference:         {tx.reference}")
-    print(f"Access code:       {tx.access_code}")
-    print(f"Authorization URL: {tx.authorization_url}")
-
-    # STEP 6: Charge a card
-
-    #  Full local card flow
-    from payfake.types import SubmitOTPInput, SubmitPINInput
-
-    tx = client.transaction.initialize(
-        InitializeInput(
-            email="customer@example.com",
-            amount=10000,
-            currency="GHS",
-        )
-    )
-    print(f"Reference: {tx.reference}")
-
-    # Step 1 — initiate card charge (local Verve card)
-    step1 = client.charge.card(
-        ChargeCardInput(
-            access_code=tx.access_code,
-            card_number="5061000000000000",
-            card_expiry="12/26",
-            cvv="123",
-            email="customer@example.com",
-        )
-    )
-    print(f"Step 1 status: {step1.status}")  # send_pin
-
-    # Step 2 — submit PIN
-    step2 = client.charge.submit_pin(
-        SubmitPINInput(
-            reference=tx.reference,
-            pin="1234",
-        )
-    )
-    print(f"Step 2 status: {step2.status}")  # send_otp
-
-    # Step 3 — get OTP from logs
-    otp_logs = client.control.get_otp_logs(token, reference=tx.reference)
-    otp_code = otp_logs[0].otp_code
-    print(f"OTP: {otp_code}")
-
-    # Step 4 — submit OTP
-    step3 = client.charge.submit_otp(
-        SubmitOTPInput(
-            reference=tx.reference,
-            otp=otp_code,
-        )
-    )
-    print(f"Step 3 status: {step3.status}")  # success
-
-    verified = client.transaction.verify(tx.reference)
-    print(f"Verified: {verified.status}")
-
-    # STEP 7: Verify transaction
-
-    verified = client.transaction.verify(tx.reference)
-    print(f"Verified status: {verified.status}")
-
-    # STEP 8: Mobile Money flow
-
-    tx2 = client.transaction.initialize(
-        InitializeInput(
-            email="momo@example.com",
-            amount=5000,
-        )
-    )
-    momo = client.charge.mobile_money(
-        ChargeMomoInput(
-            access_code=tx2.access_code,
-            phone="+233241234567",
-            provider="mtn",
-            email="momo@example.com",
-        )
-    )
-    print(f"\nMoMo charge status: {momo.transaction.status}")
-
-    # STEP 9: Control panel operations (using auth token, not secret key)
-
-    scenario = auth_client.control.update_scenario(
-        token,
-        UpdateScenarioInput(
-            failure_rate=0.5,
-            delay_ms=1000,
-        ),
-    )
-    print(f"\nScenario updated - failure rate: {scenario.failure_rate}")
-
-    # Force a specific transaction to fail
-    tx3 = client.transaction.initialize(
-        InitializeInput(
-            email="force@example.com",
-            amount=2000,
-        )
-    )
-    forced = auth_client.control.force_transaction(
-        token,
-        tx3.reference,
-        ForceTransactionInput(
-            status="failed",
-            error_code="CHARGE_INSUFFICIENT_FUNDS",
-        ),
-    )
-    print(f"Forced transaction status: {forced.status}")
-
-    # Reset scenario
-    auth_client.control.reset_scenario(token)
-    print("Scenario reset")
-
-    # STEP 10: Get recent logs
-
-    try:
-        logs = auth_client.control.get_logs(token, ListOptions(page=1, per_page=5))
-        print(f"\nRecent requests: {len(logs)}")
-        for log in logs:
-            print(f"  {log.method} {log.path} -> {log.status_code}")
-    except PayfakeError as e:
-        if e.is_code("LOGS_EMPTY"):
-            print("\nNo logs found yet (expected for new merchant)")
-        else:
-            raise
-
-
-if __name__ == "__main__":
-    main()
+stats = authed.control.get_stats(token)
+txs = stats.get("transactions", {})
+print(
+    f"\nStats: total={txs.get('total')} success_rate={txs.get('success_rate', 0):.1f}%"
+)

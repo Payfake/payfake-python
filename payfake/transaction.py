@@ -2,147 +2,100 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .types import (
-    CustomerSummary,
-    InitializeInput,
-    InitializeResponse,
-    ListOptions,
-    PaginationMeta,
-    PublicTransactionResponse,
-    PublicVerifyResponse,
-    Transaction,
-    TransactionList,
-)
-
 if TYPE_CHECKING:
-    from .client import Client
-
-
-def _parse_transaction(data: dict) -> Transaction:
-    """
-    Deserialize a raw transaction dict into a Transaction dataclass.
-    We handle the nested customer object separately since it needs
-    its own deserialization, dataclass fields don't auto-nest.
-    """
-    customer_data = data.pop("customer", {}) or {}
-    customer = CustomerSummary(
-        **{
-            k: v
-            for k, v in customer_data.items()
-            if k in CustomerSummary.__dataclass_fields__
-        }
-    )
-    tx_fields = {k: v for k, v in data.items() if k in Transaction.__dataclass_fields__}
-    tx_fields["customer"] = customer
-    return Transaction(**tx_fields)
+    from .client import _HTTPClient
 
 
 class TransactionNamespace:
-    def __init__(self, client: "Client") -> None:
-        self._client = client
+    """
+    Wraps /transaction endpoints.
+    Matches https://api.paystack.co/transaction exactly.
+    Auth: Bearer sk_test_xxx
+    """
 
-    def initialize(self, input: InitializeInput) -> InitializeResponse:
+    def __init__(self, http: "_HTTPClient") -> None:
+        self._http = http
+
+    def initialize(
+        self,
+        *,
+        email: str,
+        amount: int,
+        currency: str = "GHS",
+        reference: str = "",
+        callback_url: str = "",
+        channels: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
         """
         Create a new pending transaction.
-        Returns the authorization_url for the payment popup and the
-        access_code the popup uses to identify the transaction.
+        Returns authorization_url, access_code and reference.
+        Redirect your customer to authorization_url.
         """
-        data = self._client._request(
-            "POST", "/api/v1/transaction/initialize", body=input
-        )
-        return InitializeResponse(
-            authorization_url=data["authorization_url"],
-            access_code=data["access_code"],
-            reference=data["reference"],
-        )
+        body = {"email": email, "amount": amount, "currency": currency}
+        if reference:
+            body["reference"] = reference
+        if callback_url:
+            body["callback_url"] = callback_url
+        if channels:
+            body["channels"] = channels
+        if metadata:
+            body["metadata"] = metadata
+        return self._http.do("POST", "/transaction/initialize", body)
 
-    def verify(self, reference: str) -> Transaction:
+    def verify(self, reference: str) -> dict:
         """
         Verify a transaction by reference.
-        Call this after the payment popup closes to confirm the outcome.
-        A status of "success" means the charge went through.
+        Always call this before delivering value.
         """
-        data = self._client._request("GET", f"/api/v1/transaction/verify/{reference}")
-        return _parse_transaction(data)
+        return self._http.do("GET", f"/transaction/verify/{reference}")
 
-    def get(self, id: str) -> Transaction:
-        """Fetch a single transaction by its ID."""
-        data = self._client._request("GET", f"/api/v1/transaction/{id}")
-        return _parse_transaction(data)
+    def fetch(self, id: str) -> dict:
+        """Fetch a transaction by ID."""
+        return self._http.do("GET", f"/transaction/{id}")
 
-    def list(self, opts: ListOptions | None = None) -> TransactionList:
+    def list(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        status: str = "",
+    ) -> dict:
         """
         List transactions with pagination.
-        Pass a ListOptions instance to control page and per_page.
-        Defaults to page=1, per_page=50.
+        status: "success" | "failed" | "pending" | "abandoned"
         """
-        opts = opts or ListOptions()
-        data = self._client._request(
-            "GET",
-            f"/api/v1/transaction?page={opts.page}&per_page={opts.per_page}",
-        )
-        transactions = [_parse_transaction(tx) for tx in data.get("transactions", [])]
-        meta_data = data.get("meta", {})
-        meta = PaginationMeta(
-            **{
-                k: v
-                for k, v in meta_data.items()
-                if k in PaginationMeta.__dataclass_fields__
-            }
-        )
-        return TransactionList(transactions=transactions, meta=meta)
+        path = f"/transaction?page={page}&perPage={per_page}"
+        if status:
+            path += f"&status={status}"
+        return self._http.do("GET", path)
 
-    def refund(self, id: str) -> Transaction:
+    def refund(self, id: str) -> dict:
+        """Refund (reverse) a successful transaction."""
+        return self._http.do("POST", f"/transaction/{id}/refund")
+
+    def public_fetch(self, access_code: str) -> dict:
         """
-        Refund a successful transaction.
-        Only transactions with status "success" can be refunded.
+        Load transaction details for the checkout page using the access code.
+        No secret key required. Returns merchant branding, amount, currency
+        and current charge flow status. Call this on checkout page mount.
         """
-        data = self._client._request("POST", f"/api/v1/transaction/{id}/refund")
-        return _parse_transaction(data)
+        return self._http.do_public("GET", f"/api/v1/public/transaction/{access_code}")
 
-    def public_fetch(self, access_code: str) -> "PublicTransactionResponse":
-        """
-        Load transaction details for the checkout page.
-        No secret key required — authenticated via access code.
-        Returns amount, currency, merchant branding, customer email
-        and current charge flow status.
-
-        Called on checkout page mount::
-
-            tx = client.transaction.public_fetch(access_code)
-            print(f"Pay {tx.merchant['business_name']} GHS {tx.amount / 100:.2f}")
-        """
-
-        data = self._client._request("GET", f"/api/v1/public/transaction/{access_code}")
-        return PublicTransactionResponse(
-            **{
-                k: v
-                for k, v in data.items()
-                if k in PublicTransactionResponse.__dataclass_fields__
-            }
-        )
-
-    def public_verify(self, reference: str) -> "PublicVerifyResponse":
+    def public_verify(self, reference: str) -> dict:
         """
         Poll transaction status for MoMo pay_offline state.
-        No secret key required.
-        Poll every 3 seconds, stop when status is success or failed::
+        No secret key required. Poll every 3 seconds, stop when
+        status is "success" or "failed".
 
-            import time
+        Example::
+
             while True:
                 result = client.transaction.public_verify(reference)
-                if result.status in ("success", "failed"):
+                if result["status"] in ("success", "failed"):
                     break
                 time.sleep(3)
         """
-
-        data = self._client._request(
+        return self._http.do_public(
             "GET", f"/api/v1/public/transaction/verify/{reference}"
-        )
-        return PublicVerifyResponse(
-            **{
-                k: v
-                for k, v in data.items()
-                if k in PublicVerifyResponse.__dataclass_fields__
-            }
         )

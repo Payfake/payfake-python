@@ -2,238 +2,171 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .transaction import _parse_transaction
-from .types import (
-    CustomerList,
-    ForceTransactionInput,
-    ListOptions,
-    OTPLog,
-    PaginationMeta,
-    RequestLog,
-    ScenarioConfig,
-    Transaction,
-    TransactionList,
-    UpdateScenarioInput,
-    WebhookAttempt,
-    WebhookEvent,
-)
-
 if TYPE_CHECKING:
-    from .client import Client
-
-
-def _parse_scenario(data: dict) -> ScenarioConfig:
-    return ScenarioConfig(
-        **{k: v for k, v in data.items() if k in ScenarioConfig.__dataclass_fields__}
-    )
+    from .client import _HTTPClient
 
 
 class ControlNamespace:
     """
-    Wraps the /control endpoints, Payfake's power layer.
-    All methods require a JWT token from client.auth.login().
-    These are dashboard operations, not application-level API calls.
+    Wraps /api/v1/control endpoints.
+    Payfake-specific, no Paystack equivalent.
+    Auth: Bearer JWT (from auth.login)
     """
 
-    def __init__(self, client: "Client") -> None:
-        self._client = client
+    def __init__(self, http: "_HTTPClient") -> None:
+        self._http = http
 
-    def get_scenario(self, token: str) -> ScenarioConfig:
-        """Fetch the current scenario config for the merchant."""
-        data = self._client._request("GET", "/api/v1/control/scenario", token=token)
-        return _parse_scenario(data)
+    def get_stats(self, token: str) -> dict:
+        """Get aggregated overview stats for the dashboard."""
+        return self._http.do_jwt("GET", "/api/v1/control/stats", None, token)
 
-    def update_scenario(self, token: str, input: UpdateScenarioInput) -> ScenarioConfig:
+    def get_scenario(self, token: str) -> dict:
+        """Get the current scenario config."""
+        return self._http.do_jwt("GET", "/api/v1/control/scenario", None, token)
+
+    def update_scenario(
+        self,
+        token: str,
+        *,
+        failure_rate: float | None = None,
+        delay_ms: int | None = None,
+        force_status: str | None = None,
+        error_code: str | None = None,
+    ) -> dict:
         """
         Update the scenario config.
-        Only non-None fields are sent.
+        Only keyword args that are not None are sent.
 
-        Examples::
+        Example::
 
-            # 30% failure rate
-            client.control.update_scenario(token, UpdateScenarioInput(failure_rate=0.3))
-
-            # Force all charges to fail with insufficient funds
-            client.control.update_scenario(token, UpdateScenarioInput(
+            # Force all charges to fail
+            client.control.update_scenario(
+                token,
                 force_status="failed",
                 error_code="CHARGE_INSUFFICIENT_FUNDS",
-            ))
+            )
 
-            # Add 2 second delay to all charges
-            client.control.update_scenario(token, UpdateScenarioInput(delay_ms=2000))
+            # 30% random failure rate with 2 second delay
+            client.control.update_scenario(token, failure_rate=0.3, delay_ms=2000)
         """
-        data = self._client._request(
-            "PUT", "/api/v1/control/scenario", body=input, token=token
-        )
-        return _parse_scenario(data)
+        body: dict = {}
+        if failure_rate is not None:
+            body["failure_rate"] = failure_rate
+        if delay_ms is not None:
+            body["delay_ms"] = delay_ms
+        if force_status is not None:
+            body["force_status"] = force_status
+        if error_code is not None:
+            body["error_code"] = error_code
+        return self._http.do_jwt("PUT", "/api/v1/control/scenario", body, token)
 
-    def reset_scenario(self, token: str) -> ScenarioConfig:
-        """
-        Reset scenario config to defaults.
-        After reset: failure_rate=0, delay_ms=0, no forced status.
-        All charges will succeed instantly.
-        """
-        data = self._client._request(
-            "POST", "/api/v1/control/scenario/reset", token=token
-        )
-        return _parse_scenario(data)
+    def reset_scenario(self, token: str) -> dict:
+        """Reset scenario to defaults. All charges succeed with no delay."""
+        return self._http.do_jwt("POST", "/api/v1/control/scenario/reset", None, token)
 
-    def list_webhooks(
-        self, token: str, opts: ListOptions | None = None
-    ) -> list[WebhookEvent]:
-        """List webhook events with delivery status."""
-        opts = opts or ListOptions()
-        data = self._client._request(
+    def list_transactions(
+        self,
+        token: str,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        status: str = "",
+        search: str = "",
+    ) -> dict:
+        """
+        JWT-authenticated transaction list for the dashboard.
+        search matches reference or customer email.
+        """
+        path = f"/api/v1/control/transactions?page={page}&perPage={per_page}"
+        if status:
+            path += f"&status={status}"
+        if search:
+            path += f"&search={search}"
+        return self._http.do_jwt("GET", path, None, token)
+
+    def list_customers(self, token: str, *, page: int = 1, per_page: int = 50) -> dict:
+        """JWT-authenticated customer list for the dashboard."""
+        return self._http.do_jwt(
             "GET",
-            f"/api/v1/control/webhooks?page={opts.page}&per_page={opts.per_page}",
-            token=token,
+            f"/api/v1/control/customers?page={page}&perPage={per_page}",
+            None,
+            token,
         )
-        return [
-            WebhookEvent(
-                **{k: v for k, v in w.items() if k in WebhookEvent.__dataclass_fields__}
-            )
-            for w in data.get("webhooks", [])
-        ]
-
-    def retry_webhook(self, token: str, webhook_id: str) -> None:
-        """Manually re-trigger delivery for a failed webhook event."""
-        self._client._request(
-            "POST", f"/api/v1/control/webhooks/{webhook_id}/retry", token=token
-        )
-
-    def get_webhook_attempts(self, token: str, webhook_id: str) -> list[WebhookAttempt]:
-        """Fetch all delivery attempts for a webhook event."""
-        data = self._client._request(
-            "GET", f"/api/v1/control/webhooks/{webhook_id}/attempts", token=token
-        )
-        return [
-            WebhookAttempt(
-                **{
-                    k: v
-                    for k, v in a.items()
-                    if k in WebhookAttempt.__dataclass_fields__
-                }
-            )
-            for a in data.get("attempts", [])
-        ]
 
     def force_transaction(
-        self, token: str, reference: str, input: ForceTransactionInput
-    ) -> Transaction:
+        self,
+        token: str,
+        reference: str,
+        *,
+        status: str,
+        error_code: str = "",
+    ) -> dict:
         """
         Force a pending transaction to a specific terminal state.
-        This bypasses the scenario engine entirely,
-        the outcome is always exactly what you specify.
-
-        status must be one of: success, failed, abandoned.
+        Bypasses the scenario engine — useful for deterministic test cases.
+        status: "success" | "failed" | "abandoned"
         """
-        data = self._client._request(
-            "POST",
-            f"/api/v1/control/transactions/{reference}/force",
-            body=input,
-            token=token,
+        body: dict = {"status": status}
+        if error_code:
+            body["error_code"] = error_code
+        return self._http.do_jwt(
+            "POST", f"/api/v1/control/transactions/{reference}/force", body, token
         )
-        return _parse_transaction(data)
 
-    def get_logs(self, token: str, opts: ListOptions | None = None) -> list[RequestLog]:
-        """Fetch paginated request/response introspection logs."""
-        opts = opts or ListOptions()
-        data = self._client._request(
+    def list_webhooks(self, token: str, *, page: int = 1, per_page: int = 50) -> dict:
+        """List webhook events."""
+        return self._http.do_jwt(
             "GET",
-            f"/api/v1/control/logs?page={opts.page}&per_page={opts.per_page}",
-            token=token,
+            f"/api/v1/control/webhooks?page={page}&perPage={per_page}",
+            None,
+            token,
         )
-        return [
-            RequestLog(
-                **{k: v for k, v in log.items() if k in RequestLog.__dataclass_fields__}
-            )
-            for log in data.get("logs", [])
-        ]
+
+    def retry_webhook(self, token: str, id: str) -> None:
+        """Manually re-trigger delivery for a webhook event."""
+        self._http.do_jwt("POST", f"/api/v1/control/webhooks/{id}/retry", None, token)
+
+    def get_webhook_attempts(self, token: str, id: str) -> dict:
+        """Get all delivery attempts for a webhook event."""
+        return self._http.do_jwt(
+            "GET", f"/api/v1/control/webhooks/{id}/attempts", None, token
+        )
+
+    def get_logs(self, token: str, *, page: int = 1, per_page: int = 50) -> dict:
+        """Get paginated request/response introspection logs."""
+        return self._http.do_jwt(
+            "GET", f"/api/v1/control/logs?page={page}&perPage={per_page}", None, token
+        )
 
     def clear_logs(self, token: str) -> None:
-        """Permanently delete all logs for the merchant."""
-        self._client._request("DELETE", "/api/v1/control/logs", token=token)
+        """Permanently delete all request logs for the merchant."""
+        self._http.do_jwt("DELETE", "/api/v1/control/logs", None, token)
 
     def get_otp_logs(
         self,
         token: str,
         reference: str = "",
-        opts: ListOptions | None = None,
-    ) -> list[OTPLog]:
-        """
-        Fetch OTP codes generated during charge flows.
-        Pass reference to filter for a specific transaction.
-
-        This is the primary way to get OTPs during testing without a real phone::
-
-            logs = client.control.get_otp_logs(token, reference=tx.reference)
-            otp = logs[0].otp_code
-        """
-        from .types import OTPLog
-
-        path = "/api/v1/control/otp-logs"
-        if reference:
-            path += f"?reference={reference}"
-        elif opts:
-            path += f"?page={opts.page}&per_page={opts.per_page}"
-
-        data = self._client._request("GET", path, token=token)
-
-        raw_logs = data.get("otp_logs", [])
-        return [
-            OTPLog(**{k: v for k, v in log.items() if k in OTPLog.__dataclass_fields__})
-            for log in raw_logs
-        ]
-
-    def list_transactions(
-        self,
-        token: str,
+        *,
         page: int = 1,
         per_page: int = 50,
-        status: str = "",
-        search: str = "",
-    ) -> TransactionList:
+    ) -> list[dict]:
         """
-        JWT-authenticated transaction list for the dashboard.
-        Supports filtering by status and searching by reference or customer email.
+        Get OTP codes generated during charge flows.
+        Primary way to read OTPs during testing without a real phone.
+
+        Example::
+
+            logs = client.control.get_otp_logs(token, reference=tx["reference"])
+            otp  = logs[0]["otp_code"]
+
+        Pass reference to filter for a specific transaction.
         """
-        path = f"/api/v1/control/transactions?page={page}&per_page={per_page}"
-        if status:
-            path += f"&status={status}"
-        if search:
-            path += f"&search={search}"
-
-        data = self._client._request("GET", path, token=token)
-        transactions = [_parse_transaction(tx) for tx in data.get("transactions", [])]
-        meta = PaginationMeta(
-            **{
-                k: v
-                for k, v in data.get("meta", {}).items()
-                if k in PaginationMeta.__dataclass_fields__
-            }
-        )
-        return TransactionList(transactions=transactions, meta=meta)
-
-    def list_customers(
-        self,
-        token: str,
-        opts: ListOptions | None = None,
-    ) -> CustomerList:
-        """JWT-authenticated customer list for the dashboard."""
-        from .customer import _parse_customer
-
-        opts = opts or ListOptions()
-        data = self._client._request(
-            "GET",
-            f"/api/v1/control/customers?page={opts.page}&per_page={opts.per_page}",
-            token=token,
-        )
-        customers = [_parse_customer(c) for c in data.get("customers", [])]
-        meta = PaginationMeta(
-            **{
-                k: v
-                for k, v in data.get("meta", {}).items()
-                if k in PaginationMeta.__dataclass_fields__
-            }
-        )
-        return CustomerList(customers=customers, meta=meta)
+        if reference:
+            path = f"/api/v1/control/otp-logs?reference={reference}"
+        else:
+            path = f"/api/v1/control/otp-logs?page={page}&perPage={per_page}"
+        data = self._http.do_jwt("GET", path, None, token)
+        # Handle both flat array and paginated { data: [], meta: {} } shapes
+        if isinstance(data, list):
+            return data
+        return data.get("data", data) if isinstance(data, dict) else []
