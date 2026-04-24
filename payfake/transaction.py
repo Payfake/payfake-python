@@ -82,7 +82,7 @@ class TransactionNamespace:
         """
         return self._http.do_public("GET", f"/api/v1/public/transaction/{access_code}")
 
-    def public_verify(self, reference: str) -> dict:
+    def public_verify(self, reference: str, access_code: str) -> dict:
         """
         Poll transaction status for MoMo pay_offline state.
         No secret key required. Poll every 3 seconds, stop when
@@ -91,11 +91,12 @@ class TransactionNamespace:
         Example::
 
             while True:
-                result = client.transaction.public_verify(reference)
+                result = client.transaction.public_verify(reference, access_code)
                 if result["status"] in ("success", "failed"):
                     break
                 time.sleep(3)
         """
         return self._http.do_public(
-            "GET", f"/api/v1/public/transaction/verify/{reference}"
+            "GET",
+            f"/api/v1/public/transaction/verify/{reference}?access_code={access_code}",
         )

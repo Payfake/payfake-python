@@ -44,7 +44,7 @@ print("\n── Card flow (local Verve) ──")
 
 step1 = authed.charge.card(
     email="customer@example.com",
-    access_code=tx["access_code"],
+    reference=tx["reference"],
     card={
         "number": "5061000000000000",
         "cvv": "123",
@@ -76,7 +76,7 @@ print("\n── MoMo flow ──")
 tx2 = authed.transaction.initialize(email="momo@example.com", amount=5000)
 momo1 = authed.charge.mobile_money(
     email="momo@example.com",
-    access_code=tx2["access_code"],
+    reference=tx2["reference"],
     mobile_money={"phone": "+233241234567", "provider": "mtn"},
 )
 print("MoMo step 1:", momo1["status"])  # send_otp
@@ -90,7 +90,7 @@ print("MoMo step 2:", momo2["status"])  # pay_offline
 
 print("Polling for resolution...")
 for i in range(10):
-    result = authed.transaction.public_verify(tx2["reference"])
+    result = authed.transaction.public_verify(tx2["reference"], tx2["access_code"])
     flow = (result.get("charge") or {}).get("flow_status", "–")
     print(f"  poll {i + 1}: status={result['status']} flow={flow}")
     if result["status"] in ("success", "failed"):
@@ -112,7 +112,7 @@ tx3 = authed.transaction.initialize(email="fail@example.com", amount=10000)
 try:
     authed.charge.card(
         email="fail@example.com",
-        access_code=tx3["access_code"],
+        reference=tx3["reference"],
         card={
             "number": "5061000000000000",
             "cvv": "123",

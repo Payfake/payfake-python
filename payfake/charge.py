@@ -23,8 +23,7 @@ class ChargeNamespace:
         email: str,
         card: dict,
         amount: int = 0,
-        access_code: str = "",
-        reference: str = "",
+        reference: str,
     ) -> dict:
         """
         Initiate a card charge via POST /charge.
@@ -37,13 +36,9 @@ class ChargeNamespace:
 
         card dict: { "number": str, "cvv": str, "expiry_month": str, "expiry_year": str }
         """
-        body: dict = {"email": email, "card": card}
+        body: dict = {"email": email, "card": card, "reference": reference}
         if amount:
             body["amount"] = amount
-        if access_code:
-            body["access_code"] = access_code
-        if reference:
-            body["reference"] = reference
         return self._http.do("POST", "/charge", body)
 
     def mobile_money(
@@ -52,8 +47,7 @@ class ChargeNamespace:
         email: str,
         mobile_money: dict,
         amount: int = 0,
-        access_code: str = "",
-        reference: str = "",
+        reference: str,
     ) -> dict:
         """
         Initiate a MoMo charge via POST /charge.
@@ -62,13 +56,13 @@ class ChargeNamespace:
 
         mobile_money dict: { "phone": str, "provider": "mtn"|"vodafone"|"airteltigo" }
         """
-        body: dict = {"email": email, "mobile_money": mobile_money}
+        body: dict = {
+            "email": email,
+            "mobile_money": mobile_money,
+            "reference": reference,
+        }
         if amount:
             body["amount"] = amount
-        if access_code:
-            body["access_code"] = access_code
-        if reference:
-            body["reference"] = reference
         return self._http.do("POST", "/charge", body)
 
     def bank(
@@ -77,8 +71,7 @@ class ChargeNamespace:
         email: str,
         bank: dict,
         amount: int = 0,
-        access_code: str = "",
-        reference: str = "",
+        reference: str,
         birthday: str = "",
     ) -> dict:
         """
@@ -87,13 +80,9 @@ class ChargeNamespace:
 
         bank dict: { "code": str, "account_number": str }
         """
-        body: dict = {"email": email, "bank": bank}
+        body: dict = {"email": email, "bank": bank, "reference": reference}
         if amount:
             body["amount"] = amount
-        if access_code:
-            body["access_code"] = access_code
-        if reference:
-            body["reference"] = reference
         if birthday:
             body["birthday"] = birthday
         return self._http.do("POST", "/charge", body)
